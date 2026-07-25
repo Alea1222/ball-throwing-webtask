@@ -33,6 +33,7 @@
 <script src="https://cdn.jsdelivr.net/npm/jspsych@7.3.4/dist/index.browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@jspsych/plugin-html-button-response@1.2.0/dist/index.browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@jspsych/plugin-html-keyboard-response@1.1.3/dist/index.browser.min.js"></script>
+<script src="https://unpkg.com/@jspsych-contrib/plugin-pipe@0.5"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jspsych@7.3.4/css/jspsych.css" />
 
 <style>
@@ -547,23 +548,6 @@ function downloadVRText(){
   }catch(e){ console.error('export failed',e); }
 }
 
-// Upload the VR-format text to DataPipe/OSF (one file per participant).
-async function uploadToDataPipe(){
-  if(!BT_CONFIG.DATAPIPE_ID) return false;
-  try{
-    const res=await fetch("https://pipe.jspsych.org/api/data/",{
-      method:"POST",
-      headers:{ "Content-Type":"application/json", "Accept":"*/*" },
-      body: JSON.stringify({
-        experimentID: BT_CONFIG.DATAPIPE_ID,
-        filename: `${BT_CONFIG.participant}.txt`,
-        data: buildVRText()
-      })
-    });
-    return res.ok;
-  }catch(e){ console.error('DataPipe upload failed',e); return false; }
-}
-
 // Balanced condition assignment via DataPipe (server-coordinated). Falls back to
 // random-per-device if no DataPipe ID or the request fails.
 async function assignCondition(){
@@ -575,21 +559,35 @@ async function assignCondition(){
         body: JSON.stringify({ experimentID: BT_CONFIG.DATAPIPE_ID })
       });
       const j=await res.json();
-      if(typeof j.condition==='number' && j.condition>=0 && j.condition<CONDITIONS.length){
-        return CONDITIONS[j.condition];
-      }
+      // DataPipe returns the assigned index; accept common shapes defensively.
+      let idx = (typeof j.condition==='number') ? j.condition
+              : (typeof j.data==='number') ? j.data
+              : (j.data && typeof j.data.condition==='number') ? j.data.condition : null;
+      if(idx!=null && idx>=0 && idx<CONDITIONS.length){ return CONDITIONS[idx]; }
     }catch(e){ console.error('DataPipe condition assign failed, using random',e); }
   }
   // fallback: random per device
   return CONDITIONS[Math.floor(Math.random()*CONDITIONS.length)];
 }
 
+// Build the DataPipe save trial (official plugin). Uploads the VR-format text as
+// the file contents to the OSF component. Runs as the final timeline trial.
+function makeSaveTrial(){
+  return {
+    type: jsPsychPipe,
+    action: "save",
+    experiment_id: BT_CONFIG.DATAPIPE_ID,
+    filename: ()=>`${BT_CONFIG.participant}.txt`,
+    data_string: ()=>buildVRText(),
+    on_finish: (d)=>{ SESSION.uploadOK = !(d && d.success===false); }
+  };
+}
+
 const jsPsych = initJsPsych({
-  on_finish: async ()=>{
+  on_finish: ()=>{
     if(BT_CONFIG.TESTING){ jsPsych.data.displayData(); return; }
-    const uploaded = await uploadToDataPipe();     // try server first
-    if(!uploaded){ downloadVRText(); }             // fallback: local download
-    // simple end message so the participant knows they're done
+    // If the DataPipe save trial failed, fall back to a local download so no data is lost.
+    if(SESSION.uploadOK===false || !BT_CONFIG.DATAPIPE_ID){ downloadVRText(); }
     document.body.innerHTML='<div style="max-width:600px;margin:80px auto;font-family:sans-serif;'+
       'text-align:center;color:#12240f;"><h2>All done — thank you!</h2>'+
       '<p>Your responses have been recorded. You can close this window.</p></div>';
@@ -597,7 +595,7 @@ const jsPsych = initJsPsych({
 });
 
 // Session state. condition/structure/trialManager are resolved before the throws.
-const SESSION = { condition: null, structure:null, trialManager:null, blind:false };
+const SESSION = { condition: null, structure:null, trialManager:null, blind:false, uploadOK:null };
 
 function initSession(condition, blind){
   SESSION.condition = condition;
@@ -805,6 +803,7 @@ function buildRun(){
     choices:['Start']});
   for(let i=0;i<NUM_THROWS;i++) tl.push(makeThrowTrial({isPractice:false}));
   tl.push(relativeSkill, magnitude, hints, manipCheck, manipWhat, debrief);
+  if(!BT_CONFIG.TESTING && BT_CONFIG.DATAPIPE_ID){ tl.push(makeSaveTrial()); }
   return tl;
 }
 
