@@ -115,9 +115,14 @@ const BT_CONFIG = {
   DATAPIPE_ID: "l4vuPmnrCh5F",   // DataPipe experiment ID (OSF project j8fxt)
   NUM_CONDITIONS: 3
 };
-// auto participant id (unique per session) so remote files never collide
-BT_CONFIG.participant = "BT_WEB_" + Date.now().toString(36) + "_" +
-  Math.random().toString(36).slice(2,7);
+// auto participant id: clean local timestamp so files sort in play order and
+// never collide. Format: BT_WEB_YYYYMMDD_HHMMSS_<rand> (e.g. BT_WEB_20260724_1532_ab3)
+BT_CONFIG.participant = (function(){
+  const d=new Date(), p=n=>String(n).padStart(2,'0');
+  const stamp=`${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  const rand=Math.random().toString(36).slice(2,5);
+  return `BT_WEB_${stamp}_${rand}`;
+})();
 const CONDITIONS = ["improvement","stochastic","unmanipulated"];
 const STRUCTURES = { improvement:"FFFSSSS", stochastic:"SSFFSFS", unmanipulated:"UUUUUUU" };
 
@@ -745,7 +750,12 @@ const hints={type:jsPsychHtmlButtonResponse,
   stimulus:panel(`<p>Any hints or suggestions for someone who has never done this before?</p>
     <textarea id="bt-hints" rows="4" style="width:100%;font-size:15px;padding:8px;box-sizing:border-box;"></textarea>`),
   choices:['Continue'], data:{measure:'hints'},
-  on_finish:(d)=>{ const el=document.getElementById('bt-hints'); d.hints_text = el?el.value:''; }};
+  on_load:function(){
+    const el=document.getElementById('bt-hints');
+    if(el) el.addEventListener('input', ()=>{ window.__hints=el.value; });
+    window.__hints='';
+  },
+  on_finish:(d)=>{ d.hints_text = window.__hints||''; }};
 
 const manipCheck={type:jsPsychHtmlButtonResponse,
   stimulus:panel(`<p>During the study, did you think any aspect of your environment
@@ -757,7 +767,12 @@ const manipWhat={ timeline:[{type:jsPsychHtmlButtonResponse,
   stimulus:panel(`<p>What do you think was manipulated or altered?</p>
     <textarea id="bt-manip" rows="4" style="width:100%;font-size:15px;padding:8px;box-sizing:border-box;"></textarea>`),
   choices:['Continue'], data:{measure:'manipulation_what'},
-  on_finish:(d)=>{ const el=document.getElementById('bt-manip'); d.manip_text = el?el.value:''; }}],
+  on_load:function(){
+    const el=document.getElementById('bt-manip');
+    if(el) el.addEventListener('input', ()=>{ window.__manip=el.value; });
+    window.__manip='';
+  },
+  on_finish:(d)=>{ d.manip_text = window.__manip||''; }}],
   conditional_function:()=>{ const l=jsPsych.data.get().filter({measure:'manipulation_check'}).last(1).values()[0];
     return l && l.suspected; }};
 
