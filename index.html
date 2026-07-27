@@ -505,14 +505,14 @@ function buildVRText(){
       out+=`EUCLIDEAN DISTANCE FROM ORIGIN: ${dist}${CRLF}${CRLF}`;
     } else {
       recN++;
-      if(r.trial_type==='S'){
+      if(r.throw_type==='S'){
         out+=`TRIAL ${recN}: SUCCESS${CRLF}`;
         out+=`ZONE SIZE: ${r.zone_size}${CRLF}`;
         out+=`LANDING POINT: ${pt}${CRLF}`;
         out+=`TARGET POINT: ${pt}${CRLF}`;
         out+=`ACTUAL FINAL POSITION: ${pt}${CRLF}`;
         out+=`EUCLIDEAN DISTANCE FROM ORIGIN: ${dist}${CRLF}${CRLF}`;
-      } else if(r.trial_type==='F'){
+      } else if(r.throw_type==='F'){
         out+=`TRIAL ${recN}: FAILURE${CRLF}`;
         out+=`FAILURE ZONE: ${r.fail_side}${CRLF}`;
         out+=`LANDING POINT: ${pt}${CRLF}`;
@@ -716,7 +716,7 @@ function makeThrowTrial({isPractice, label}){
             participant: BT_CONFIG.participant,
             condition: SESSION.condition,                 // TRUE condition, per run
             recorded: !isPractice,                        // false = warmup (pre-start)
-            trial_type: loggedType,                       // 'S' | 'F' | 'U'
+            throw_type: loggedType,                       // 'S' | 'F' | 'U' (our field; trial_type is reserved by jsPsych)
             trial_number: isPractice?null:(SESSION.trialManager.trialCount+1),
             landing_x:+res.landing.x.toFixed(3), landing_y:+res.landing.y.toFixed(3),
             dist_from_center:+res.dist.toFixed(3),        // Euclidean from center
