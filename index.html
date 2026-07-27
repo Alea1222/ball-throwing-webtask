@@ -594,8 +594,8 @@ const jsPsych = initJsPsych({
     // If the DataPipe save trial failed, fall back to a local download so no data is lost.
     if(SESSION.uploadOK===false || !BT_CONFIG.DATAPIPE_ID){ downloadVRText(); }
     document.body.innerHTML='<div style="max-width:600px;margin:80px auto;font-family:sans-serif;'+
-      'text-align:center;color:#12240f;"><h2>All done — thank you!</h2>'+
-      '<p>Your responses have been recorded. You can close this window.</p></div>';
+      'text-align:center;color:#eef2ec;"><h2>All done — thank you!</h2>'+
+      '<p style="color:#c7d0c4;">Your responses have been recorded. You can close this window.</p></div>';
   }
 });
 
