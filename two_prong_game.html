@@ -1,9 +1,10 @@
 <!DOCTYPE html>
 <!--
   ==========================================================================
-  BT_v2 — Web VR ball-throwing task
+  BT_v2 — Web (jsPsych) port of the VR ball-throwing task.
+  Social Learning Lab @ Stanford.
 
-  What differs:
+  FIDELITY NOTES (analogue vs. identity) — read before running participants:
   1. INPUT DIFFERS. VR = a real physical throw; web = a single-button catapult
      (hold = power/depth, release position on the sweep = lateral aim). Both give
      a direction + power, but the motor skill differs. This matters most for the
@@ -127,7 +128,7 @@ const STRUCTURES = { improvement:"FFFSSSS", stochastic:"SSFFSFS", unmanipulated:
 
 
 /* -------------------------------------------------------------------------
-   SLINGSHOT / CATAPULT THROW — same across ALL conditions:
+   SLINGSHOT / CATAPULT THROW (Angry Birds style) — same across ALL conditions:
      • DRAG the ball back from the catapult (mouse/touch). The drag vector sets
        BOTH power and aim: pull length -> power (bigger arc, further), pull
        side-to-side -> aim (left/right). Release to launch; the ball flies a big
@@ -998,6 +999,16 @@ const timeline=[replayLoop];
 // Startup: in pilot mode, assign a (balanced) condition BEFORE running. In testing
 // mode, the picker sets the condition instead.
 async function startExperiment(){
+  // === TESTING OVERRIDE: force IMPROVEMENT for every run. ===
+  // Remove this block (and un-comment nothing else) to restore normal
+  // balanced/picker assignment.
+  const FORCE_CONDITION = "improvement";   // set to null to disable the override
+  if(FORCE_CONDITION){
+    initSession(FORCE_CONDITION, false);
+    jsPsych.run(timeline);
+    return;
+  }
+
   if(!BT_CONFIG.TESTING){
     const cond = await assignCondition();
     initSession(cond, false);
