@@ -304,6 +304,13 @@ function drawBall3D(ctx, x, d, airH){
    x = lateral (unchanged). y = depth error: +y overshoot (past ring, larger d),
    -y undershoot (short, smaller d). Ring sits at RING_D. */
 function landingToGround(l){
+  return _l2g_clamped(l);
+}
+// unclamped version: exact ground position, no field bounds (used for practice void)
+function landingToGroundRaw(l){
+  return { x: l.x, d: Math.max(THROWER_D+0.3, RING_D + l.y) };
+}
+function _l2g_clamped(l){
   const gx = l.x;
   const gd = RING_D + l.y;          // +y => beyond ring; -y => short of ring
   // Only clamp to keep it drawable on the field; allow big over/undershoots and
@@ -501,9 +508,16 @@ function runThrow(ctx, opts){
     // (no mid-flight correction/jump). Fly from the fork to the landing, then roll.
     flightStart={ x:0, d:THROWER_D };
     if(opts.voidMode){
-      // practice: fly off into the distance (unscored) and disappear
-      landPoint=landingToGround({ x: visualLanding.x*2.5, y: VIEW.dFar });
-      apexH=1.6 + resultPower*1.8;
+      // PRACTICE = identical to an unmanipulated (U) throw: real skill decides the
+      // landing (visualLanding already came from realLandingFromControl). Use the
+      // UNCLAMPED ground position so a hard sideways throw flies straight off — no
+      // field bounds, no "wall". Then it keeps going and fades out.
+      const g=landingToGroundRaw(visualLanding);
+      landPoint={ x:g.x, d:g.d };
+      apexH=1.1 + resultPower*1.6;                       // same arc as U
+      // fly a bit past the landing so it sails off into the void
+      finalWorld={ x:visualLanding.x*1.6, y:visualLanding.y + 6 };
+      finalPoint=landingToGroundRaw(finalWorld);
     } else {
       landPoint=landingToGround(visualLanding);
       apexH=1.1 + resultPower*1.6;                       // arc height by power
