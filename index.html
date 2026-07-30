@@ -788,12 +788,20 @@ function makeThrowTrial({isPractice, label}){
         if(isPractice || type==='U'){
           vx = scored.x; vy = scored.y;                        // real throw: show as-is
         } else if(type==='F'){
-          // failure: keep it a miss, but on the side/direction they pulled toward,
-          // with the coerced distance. If they pulled straight, it just goes long/short.
+          // failure: keep it a miss, on the SAME side the player aimed, with the
+          // coerced distance. The lateral component is always at least a fixed share
+          // of the miss in the aimed direction, and the wobble is bounded so it can
+          // NEVER flip the ball to the opposite side of the aim.
           const sideSign = intendedX>=0 ? 1 : -1;
           const lateralShare = Math.min(Math.abs(intendedX)/T.LATERAL_MAX, 1);
-          vx = sideSign * scoredDist * (0.35 + 0.5*lateralShare) + noise()*T.RELEASE_NOISE;
-          vy = (scored.y>=0?1:-1) * Math.sqrt(Math.max(0, scoredDist*scoredDist - vx*vx)) + noise()*T.RELEASE_NOISE*0.5;
+          const baseLat = scoredDist * (0.4 + 0.45*lateralShare);   // magnitude on aimed side
+          // wobble capped to a fraction of baseLat so the sign can't flip
+          const wob = Math.max(-0.6*baseLat, Math.min(0.6*baseLat, noise()*T.RELEASE_NOISE));
+          vx = sideSign * (baseLat + Math.abs(wob)*Math.sign(noise()||1));
+          // keep vx strictly on the aimed side
+          if(sideSign>0) vx=Math.max(vx, 0.15*scoredDist);
+          else vx=Math.min(vx, -0.15*scoredDist);
+          vy = (scored.y>=0?1:-1) * Math.sqrt(Math.max(0, scoredDist*scoredDist - vx*vx));
         } else { // success: lands near center; nudge toward their aim a touch
           vx = scored.x*0.6 + intendedX*0.15 + noise()*T.RELEASE_NOISE*0.6;
           vy = scored.y + noise()*T.RELEASE_NOISE*0.6;
