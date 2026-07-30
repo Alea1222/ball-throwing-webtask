@@ -1,10 +1,9 @@
 <!DOCTYPE html>
 <!--
   ==========================================================================
-  BT_v2 — Web (jsPsych) port of the VR ball-throwing task.
-  Social Learning Lab @ Stanford.
+  BT_v2 — Web VR ball-throwing task
 
-  FIDELITY NOTES (analogue vs. identity) — read before running participants:
+  What differs:
   1. INPUT DIFFERS. VR = a real physical throw; web = a single-button catapult
      (hold = power/depth, release position on the sweep = lateral aim). Both give
      a direction + power, but the motor skill differs. This matters most for the
@@ -128,7 +127,7 @@ const STRUCTURES = { improvement:"FFFSSSS", stochastic:"SSFFSFS", unmanipulated:
 
 
 /* -------------------------------------------------------------------------
-   SLINGSHOT / CATAPULT THROW (Angry Birds style) — same across ALL conditions:
+   SLINGSHOT / CATAPULT THROW — same across ALL conditions:
      • DRAG the ball back from the catapult (mouse/touch). The drag vector sets
        BOTH power and aim: pull length -> power (bigger arc, further), pull
        side-to-side -> aim (left/right). Release to launch; the ball flies a big
