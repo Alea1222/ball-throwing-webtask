@@ -37,7 +37,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jspsych@7.3.4/css/jspsych.css" />
 
 <style>
-  html,body{margin:0;background:#0d130c;color:#eef2ec;
+  html,body{margin:0;background:#ffffff;color:#12240f;
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
   .jspsych-content{max-width:900px;}
   .bt-instructions{max-width:640px;margin:0 auto;line-height:1.55;font-size:17px;color:#12240f;text-align:left;}
@@ -153,8 +153,16 @@ const THROW_TUNING = {
   // realism / hiding coercion
   RELEASE_NOISE: 0.55,     // per-throw release imprecision (world units), ALL conditions
   SKILL_NOISE: 0.22,       // extra motor noise on real (U/practice) throws
-  // gentle catapult bob (visual only; does NOT gate the aim anymore)
-  SWAY_MS: 2200
+  // catapult wobble (LARGE). Affects aim on real (U/practice) throws via the sway
+  // value at the moment of release. On coerced S/F it is visual only (can't move
+  // a predetermined landing).
+  SWAY_MS: 1500,           // wobble period (faster = harder to time)
+  SWAY_VISUAL: 0.9,        // how far the frame visually rocks (big)
+  SWAY_AIM: 0.6,           // how much release-moment wobble perturbs real-throw aim
+  // flight / roll
+  FLIGHT_MS: 1050,         // time in the air
+  ROLL_MS: 650,            // time rolling after landing
+  ROLL_DIST: 1.4           // world-units the ball rolls forward past landing
 };
 </script>
 
@@ -250,6 +258,20 @@ function drawScene(ctx){
   drawGroundRing(ctx, 0, RING_D, 1.2, true);
 }
 
+/* Void scene for PRACTICE throws: empty neutral space, no field/walls/target.
+   The ball flies off into the distance and disappears. */
+function drawVoid(ctx){
+  const W=FIELD.w, H=FIELD.h;
+  // soft vertical gradient (light space), so it reads as "nowhere" not the field
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#dfe6ea'); g.addColorStop(1,'#c2ccd2');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  // faint ground shadow under the thrower so the catapult sits on something
+  const base=project(0,THROWER_D);
+  ctx.fillStyle='rgba(0,0,0,0.06)';
+  ctx.beginPath(); ctx.ellipse(base.sx, base.sy+22, 60, 14, 0,0,2*Math.PI); ctx.fill();
+}
+
 /* draw an ellipse on the ground plane by projecting points around a world circle */
 function drawGroundRing(ctx, cx, cd, r, dashed){
   ctx.strokeStyle='#fff'; ctx.lineWidth=2.5; if(dashed) ctx.setLineDash([8,7]);
@@ -326,10 +348,12 @@ function realLandingFromControl(power, aim){
 function runThrow(ctx, opts){
   const sub=document.getElementById('bt-sub');
   const T=THROW_TUNING;
-  let raf=null, phase='ready', t0=0, flyStart=0;
+  let raf=null, phase='ready', t0=0, flyStart=0, rollStart=0;
   let dragging=false, dragDX=0, dragDY=0;         // drag delta from anchor (px)
   let swayNow=0;
   let scoredLanding=null, visualLanding=null, resultAim=0, resultPower=0;
+  // trajectory (computed once at release, so flight is a single smooth curve)
+  let flightStart=null, landPoint=null, finalPoint=null, apexH=0, finalWorld=null;
   const anchor=project(0,THROWER_D);              // ball rest position (screen px)
 
   function baseSway(now){ return Math.sin(((now-t0)%T.SWAY_MS)/T.SWAY_MS*2*Math.PI); }
@@ -346,7 +370,7 @@ function runThrow(ctx, opts){
   // fork position (where the band is anchored) in screen px.
   function drawCatapult(ctx, swayShift){
     const cxp=anchor.sx, groundY=anchor.sy+22;
-    const tilt=swayShift*0.13;                 // frame rocks with sway (radians)
+    const tilt=swayShift*T.SWAY_VISUAL;        // frame rocks hard with sway (radians)
     const forkH=54, halfW=17;
     // pivot at ground, fork rotates about it
     const fx = cxp + Math.sin(tilt)*forkH;     // fork center x
@@ -369,7 +393,8 @@ function runThrow(ctx, opts){
   }
 
   function loop(now){
-    ctx.clearRect(0,0,FIELD.w,FIELD.h); drawScene(ctx);
+    ctx.clearRect(0,0,FIELD.w,FIELD.h);
+    if(opts.voidMode){ drawVoid(ctx); } else { drawScene(ctx); }
     swayNow = baseSway(now);
 
     if(phase==='aiming'){
@@ -394,22 +419,40 @@ function runThrow(ctx, opts){
         sub.textContent='Press on the ball and drag back to launch.';
       }
     } else if(phase==='fly'){
-      drawCatapult(ctx, swayNow);
-      const dur=1050;
-      const p=Math.min((now-flyStart)/dur,1);
-      const g=landingToGround(visualLanding);   // fly to the (noised) visual spot
-      // horizontal/depth travel eases out slightly (air drag feel)
+      if(opts.voidMode){ drawVoid(ctx); drawCatapult(ctx, swayNow); }
+      else drawCatapult(ctx, swayNow);
+      const p=Math.min((now-flyStart)/T.FLIGHT_MS,1);
       const travel=1-Math.pow(1-p,1.7);
-      const cx=(g.x)*travel, cd=THROWER_D+(g.d-THROWER_D)*travel;
-      // realistic gravity arc: height = launch*t - 0.5*g*t^2 style parabola.
-      // peak scaled by power so harder throws arc higher (Angry Birds feel).
-      const apex=1.1 + resultPower*1.6;
-      const airH=apex*(4*p*(1-p));   // parabola: 0 at p=0 and p=1, max at p=0.5
-      drawBall3D(ctx, cx, cd, airH);
+      const cx=flightStart.x+(landPoint.x-flightStart.x)*travel;
+      const cd=flightStart.d+(landPoint.d-flightStart.d)*travel;
+      const airH=apexH*(4*p*(1-p));
+      // fade the ball out near the end in void mode so it "disappears"
+      if(opts.voidMode){
+        ctx.globalAlpha = p<0.7?1:Math.max(0,1-(p-0.7)/0.3);
+        drawBall3D(ctx, cx, cd, airH); ctx.globalAlpha=1;
+      } else {
+        drawBall3D(ctx, cx, cd, airH);
+      }
+      if(p>=1){
+        if(opts.voidMode){ phase='done'; cleanup();
+          opts.onDone({landing:scoredLanding, dist:euclideanFromCenter(scoredLanding),
+                       aim:resultAim, power:resultPower,
+                       landingPoint:visualLanding, finalPoint:visualLanding});
+          return;
+        }
+        phase='roll'; rollStart=now;
+      }
+    } else if(phase==='roll'){
+      drawCatapult(ctx, swayNow);
+      const p=Math.min((now-rollStart)/T.ROLL_MS,1);
+      const ease=1-Math.pow(1-p,2);           // decelerating roll
+      const cx=landPoint.x+(finalPoint.x-landPoint.x)*ease;
+      const cd=landPoint.d+(finalPoint.d-landPoint.d)*ease;
+      drawBall3D(ctx, cx, cd, 0);             // on the ground, no arc height
       if(p>=1){ phase='done'; cleanup();
-        // SCORED value uses the exact (pre-noise) landing => VR-faithful data
         opts.onDone({landing:scoredLanding, dist:euclideanFromCenter(scoredLanding),
-                     aim:resultAim, power:resultPower});
+                     aim:resultAim, power:resultPower,
+                     landingPoint:visualLanding, finalPoint:finalWorld});
         return; }
     }
     raf=requestAnimationFrame(loop);
@@ -429,11 +472,13 @@ function runThrow(ctx, opts){
     return len / T.MAX_PULL_PX;                       // 0..1
   }
   // aim = sideways launch direction. Slingshot: pulling the ball LEFT launches it
-  // RIGHT, so launch aim is opposite the horizontal drag. (No sway gating now — the
-  // catapult bob is purely visual; unpredictability comes from release noise.)
+  // RIGHT, so launch aim is opposite the horizontal drag. The catapult wobble at
+  // the MOMENT OF RELEASE perturbs the aim (big wobble = harder to aim straight).
   function currentAim(){
     const lateralPull = -dragDX / T.MAX_PULL_PX;      // drag left (dragDX<0) => aim right (+)
-    return Math.max(-1.4, Math.min(1.4, lateralPull)) * T.AIM_MAX/1.4;
+    let aim = Math.max(-1.4, Math.min(1.4, lateralPull)) * T.AIM_MAX/1.4;
+    aim += swayNow * T.SWAY_AIM;                       // wobble-at-release drift
+    return Math.max(-T.AIM_MAX, Math.min(T.AIM_MAX, aim));
   }
 
   function startDrag(px,py){
@@ -452,6 +497,20 @@ function runThrow(ctx, opts){
     resultAim=currentAim(); resultPower=currentPower();
     const out=opts.getOutcome(resultAim, resultPower);  // {scored, visual}
     scoredLanding=out.scored; visualLanding=out.visual;
+    // Compute the WHOLE trajectory now, once, so the flight is one smooth curve
+    // (no mid-flight correction/jump). Fly from the fork to the landing, then roll.
+    flightStart={ x:0, d:THROWER_D };
+    if(opts.voidMode){
+      // practice: fly off into the distance (unscored) and disappear
+      landPoint=landingToGround({ x: visualLanding.x*2.5, y: VIEW.dFar });
+      apexH=1.6 + resultPower*1.8;
+    } else {
+      landPoint=landingToGround(visualLanding);
+      apexH=1.1 + resultPower*1.6;                       // arc height by power
+      // roll: continue forward (away from thrower) a bit, scaled by power
+      finalWorld={ x:visualLanding.x, y:visualLanding.y + T.ROLL_DIST*(0.5+resultPower*0.7) };
+      finalPoint=landingToGround(finalWorld);
+    }
     phase='fly'; flyStart=performance.now();
   }
 
@@ -494,36 +553,38 @@ function buildVRText(){
   // warmup block first (labeled as warmup practice), then recorded trials
   let warmN=0, recN=0;
   rows.forEach(r=>{
-    const pt=`[${r.landing_x}, ${r.landing_y}, 0]`;
+    const scoredPt=`[${r.landing_x}, ${r.landing_y}, 0]`;          // scored (TARGET)
+    const landPt=`[${r.vland_x!=null?r.vland_x:r.landing_x}, ${r.vland_y!=null?r.vland_y:r.landing_y}, 0]`;   // first touch
+    const finalPt=`[${r.vfinal_x!=null?r.vfinal_x:r.landing_x}, ${r.vfinal_y!=null?r.vfinal_y:r.landing_y}, 0]`; // after roll
     const dist=r.dist_from_center;
     if(!r.recorded){
       warmN++;
       out+=`WARMUP ${warmN}: UNMANIPULATED${CRLF}`;
-      out+=`NATURAL LANDING POINT: ${pt}${CRLF}`;
-      out+=`DECELERATION POINT: ${pt}${CRLF}`;
-      out+=`ACTUAL FINAL POSITION: ${pt}${CRLF}`;
+      out+=`NATURAL LANDING POINT: ${landPt}${CRLF}`;
+      out+=`DECELERATION POINT: ${landPt}${CRLF}`;
+      out+=`ACTUAL FINAL POSITION: ${finalPt}${CRLF}`;
       out+=`EUCLIDEAN DISTANCE FROM ORIGIN: ${dist}${CRLF}${CRLF}`;
     } else {
       recN++;
       if(r.throw_type==='S'){
         out+=`TRIAL ${recN}: SUCCESS${CRLF}`;
         out+=`ZONE SIZE: ${r.zone_size}${CRLF}`;
-        out+=`LANDING POINT: ${pt}${CRLF}`;
-        out+=`TARGET POINT: ${pt}${CRLF}`;
-        out+=`ACTUAL FINAL POSITION: ${pt}${CRLF}`;
+        out+=`LANDING POINT: ${landPt}${CRLF}`;
+        out+=`TARGET POINT: ${scoredPt}${CRLF}`;
+        out+=`ACTUAL FINAL POSITION: ${finalPt}${CRLF}`;
         out+=`EUCLIDEAN DISTANCE FROM ORIGIN: ${dist}${CRLF}${CRLF}`;
       } else if(r.throw_type==='F'){
         out+=`TRIAL ${recN}: FAILURE${CRLF}`;
         out+=`FAILURE ZONE: ${r.fail_side}${CRLF}`;
-        out+=`LANDING POINT: ${pt}${CRLF}`;
-        out+=`TARGET POINT: ${pt}${CRLF}`;
-        out+=`ACTUAL FINAL POSITION: ${pt}${CRLF}`;
+        out+=`LANDING POINT: ${landPt}${CRLF}`;
+        out+=`TARGET POINT: ${scoredPt}${CRLF}`;
+        out+=`ACTUAL FINAL POSITION: ${finalPt}${CRLF}`;
         out+=`EUCLIDEAN DISTANCE FROM ORIGIN: ${dist}${CRLF}${CRLF}`;
       } else { // U
         out+=`TRIAL ${recN}: UNMANIPULATED${CRLF}`;
-        out+=`NATURAL LANDING POINT: ${pt}${CRLF}`;
-        out+=`DECELERATION POINT: ${pt}${CRLF}`;
-        out+=`ACTUAL FINAL POSITION: ${pt}${CRLF}`;
+        out+=`NATURAL LANDING POINT: ${landPt}${CRLF}`;
+        out+=`DECELERATION POINT: ${landPt}${CRLF}`;
+        out+=`ACTUAL FINAL POSITION: ${finalPt}${CRLF}`;
         out+=`EUCLIDEAN DISTANCE FROM ORIGIN: ${dist}${CRLF}${CRLF}`;
       }
     }
@@ -594,8 +655,8 @@ const jsPsych = initJsPsych({
     // If the DataPipe save trial failed, fall back to a local download so no data is lost.
     if(SESSION.uploadOK===false || !BT_CONFIG.DATAPIPE_ID){ downloadVRText(); }
     document.body.innerHTML='<div style="max-width:600px;margin:80px auto;font-family:sans-serif;'+
-      'text-align:center;color:#eef2ec;"><h2>All done — thank you!</h2>'+
-      '<p style="color:#c7d0c4;">Your responses have been recorded. You can close this window.</p></div>';
+      'text-align:center;color:#12240f;"><h2>All done — thank you!</h2>'+
+      '<p style="color:#4a5a46;">Your responses have been recorded. You can close this window.</p></div>';
   }
 });
 
@@ -700,6 +761,7 @@ function makeThrowTrial({isPractice, label}){
       }
 
       runThrow(ctx, {
+        voidMode: isPractice,
         getOutcome,
         onDone: (res)=>{
           // Match the VR data scheme (record_trial_data + the experiment_started
@@ -719,7 +781,13 @@ function makeThrowTrial({isPractice, label}){
             throw_type: loggedType,                       // 'S' | 'F' | 'U' (our field; trial_type is reserved by jsPsych)
             trial_number: isPractice?null:(SESSION.trialManager.trialCount+1),
             landing_x:+res.landing.x.toFixed(3), landing_y:+res.landing.y.toFixed(3),
-            dist_from_center:+res.dist.toFixed(3),        // Euclidean from center
+            dist_from_center:+res.dist.toFixed(3),        // Euclidean from center (SCORED, VR-faithful)
+            // visual landing (first touch) vs final resting position (after roll),
+            // to match VR's LANDING POINT vs ACTUAL FINAL POSITION. Display-only.
+            vland_x:+(res.landingPoint?res.landingPoint.x:res.landing.x).toFixed(3),
+            vland_y:+(res.landingPoint?res.landingPoint.y:res.landing.y).toFixed(3),
+            vfinal_x:+(res.finalPoint?res.finalPoint.x:res.landing.x).toFixed(3),
+            vfinal_y:+(res.finalPoint?res.finalPoint.y:res.landing.y).toFixed(3),
             aim:+res.aim.toFixed(3), power:+res.power.toFixed(3),
             zone_size:(!isPractice && type==='S')?SESSION.trialManager.getSuccessZoneSize():null,
             fail_side: failSide
