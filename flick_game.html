@@ -1,8 +1,7 @@
 <!DOCTYPE html>
 <!--
   ==========================================================================
-  BT_v2 — Web (jsPsych) port of the VR ball-throwing task.
-  Social Learning Lab @ Stanford.
+  BT_v2 — Web VR ball-throwing task
 
   FIDELITY NOTES (analogue vs. identity) — read before running participants:
   1. INPUT DIFFERS. VR = a real physical throw; web (THIS build) = a mouse/touch
@@ -150,13 +149,14 @@ const STRUCTURES = { improvement:"FFFSSSS", stochastic:"SSFFSFS", unmanipulated:
    across input methods — only how (power,aim) are OBTAINED changed.
    ------------------------------------------------------------------------- */
 const THROW_TUNING = {
-  // flick velocity -> power. Release speed is measured in px/ms over a short
-  // trailing window; it is mapped linearly from [MIN..MAX] onto power [0..1].
-  FLICK_MIN_SPEED: 0.35,   // px/ms at/below this = ~0 power (a gentle flick)
-  FLICK_MAX_SPEED: 3.2,    // px/ms at/above this = full power (a hard flick)
-  FLICK_MIN_TRAVEL_PX: 18, // ignore micro-jitters: need at least this much travel
-  FLICK_SAMPLE_MS: 90,     // trailing window (ms) used to estimate release velocity
-  UP_DOT_MIN: 0.15,        // flick must point upward: cos(angle-from-up) >= this
+  // swipe speed -> power. PEAK speed over the swipe (px/ms) is mapped linearly
+  // from [MIN..MAX] onto power [0..1]. Peak (not final-instant) so coasting to a
+  // stop before lift-off doesn't kill the throw.
+  FLICK_MIN_SPEED: 0.35,   // px/ms at/below this = ~0 power (a gentle swipe)
+  FLICK_MAX_SPEED: 3.2,    // px/ms at/above this = full power (a hard swipe)
+  FLICK_MIN_TRAVEL_PX: 18, // min anchor->release distance to count as a swipe
+  FLICK_SAMPLE_MS: 90,     // (buffer bound only; peak speed uses adjacent samples)
+  UP_DOT_MIN: 0.15,        // swipe must point upward: up-fraction >= this
   // power -> depth/aim (IDENTICAL to slingshot builds; keep for U comparability)
   PERFECT_PULL: 0.62,      // power that yields zero depth error (perfect distance)
   DEPTH_PER_POWER: 16.0,   // world-units depth error per unit of power off perfect
@@ -366,7 +366,6 @@ function runThrow(ctx, opts){
   const T=THROW_TUNING;
   let raf=null, phase='ready', t0=0, flyStart=0, rollStart=0;
   let pressing=false;                              // finger/mouse currently down
-  let ballScreen=null;                             // ball's current screen pos while aiming
   let samples=[];                                  // trailing {t,x,y} pointer samples for velocity
   let scoredLanding=null, visualLanding=null, resultAim=0, resultPower=0;
   // trajectory (computed once at release, so flight is a single smooth curve)
@@ -376,33 +375,29 @@ function runThrow(ctx, opts){
   const REST={ x:anchor.sx, y:anchor.sy+8 };       // where the ball sits before a throw
   const BALL_R=16;
 
-  // --- velocity estimate from the trailing sample window --------------------
-  // Returns {vx,vy,speed} in px/ms using the oldest sample within FLICK_SAMPLE_MS
-  // of the newest. This captures the *release* flick, not the whole gesture.
-  function releaseVelocity(){
-    if(samples.length<2) return {vx:0,vy:0,speed:0};
-    const newest=samples[samples.length-1];
-    let old=samples[0];
-    for(let i=samples.length-1;i>=0;i--){
-      if(newest.t - samples[i].t <= T.FLICK_SAMPLE_MS){ old=samples[i]; } else break;
-    }
-    const dt=Math.max(newest.t-old.t, 1);          // ms (guard divide-by-zero)
-    const vx=(newest.x-old.x)/dt, vy=(newest.y-old.y)/dt;
-    return {vx, vy, speed:Math.sqrt(vx*vx+vy*vy)};
-  }
-
-  // draw a short fading motion trail behind the ball while the player is flicking
-  function drawTrail(){
-    if(samples.length<2) return;
-    ctx.lineCap='round';
+  // --- gesture read (robust) ------------------------------------------------
+  // The ball is fixed; the SWIPE from the press anchor is the throw. Reading only
+  // the final instant is fragile (people decelerate before lifting), so we read:
+  //   • speed  = PEAK speed over any adjacent sample pair (px/ms) — the flick's
+  //     intensity, unaffected by coasting to a stop at the end.
+  //   • dir    = unit vector from the PRESS ANCHOR to the RELEASE point — a stable,
+  //     unambiguous "which way did I swipe" that doesn't jitter frame-to-frame.
+  // Returns {vx,vy,speed} where (vx,vy) is dir*speed (so downstream code that reads
+  // direction from vx/vy and magnitude from speed keeps working).
+  function gestureRead(){
+    if(samples.length<2) return {vx:0,vy:0,speed:0,travel:0};
+    let peak=0;
     for(let i=1;i<samples.length;i++){
       const a=samples[i-1], b=samples[i];
-      const age=(samples[samples.length-1].t - b.t)/220;   // 0(new)..1(old)
-      if(age>1) continue;
-      ctx.strokeStyle=`rgba(225,45,40,${0.35*(1-age)})`;
-      ctx.lineWidth=(BALL_R*1.2)*(1-age);
-      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+      const dt=Math.max(b.t-a.t,1);
+      const s=Math.hypot(b.x-a.x, b.y-a.y)/dt;
+      if(s>peak) peak=s;
     }
+    const first=samples[0], last=samples[samples.length-1];
+    const dx=last.x-first.x, dy=last.y-first.y;
+    const travel=Math.hypot(dx,dy);
+    const inv=travel>0 ? 1/travel : 0;
+    return { vx:dx*inv*peak, vy:dy*inv*peak, speed:peak, travel };
   }
 
   function loop(now){
@@ -410,21 +405,15 @@ function runThrow(ctx, opts){
     if(opts.voidMode){ drawVoid(ctx); } else { drawScene(ctx); }
 
     if(phase==='aiming'){
-      if(pressing && ballScreen){
-        drawTrail();
-        // ball follows the cursor as the player winds up / flicks
-        const grd=ctx.createRadialGradient(ballScreen.x-4,ballScreen.y-4,2,ballScreen.x,ballScreen.y,BALL_R);
-        grd.addColorStop(0,'#ff5b52'); grd.addColorStop(1,'#c21f1a');
-        ctx.beginPath(); ctx.arc(ballScreen.x,ballScreen.y,BALL_R,0,2*Math.PI); ctx.fillStyle=grd; ctx.fill();
-        ctx.strokeStyle='#8e1b18'; ctx.lineWidth=2; ctx.stroke();
-        sub.textContent='Flick up toward the target and release to throw.';
-      } else {
-        // ball resting on the ground near the camera, with a soft shadow
-        ctx.fillStyle='rgba(0,0,0,0.22)';
-        ctx.beginPath(); ctx.ellipse(REST.x, REST.y+BALL_R*0.9, BALL_R*0.9, BALL_R*0.4, 0,0,2*Math.PI); ctx.fill();
-        drawBallScreen(REST.x, REST.y, BALL_R);
-        sub.textContent='Press on the ball, then flick upward to throw.';
-      }
+      // The ball ALWAYS stays put at REST — the player presses and swipes; the
+      // swipe vector (speed + direction) is the throw, read at release. The ball
+      // never follows the cursor and shows no indicator.
+      ctx.fillStyle='rgba(0,0,0,0.22)';
+      ctx.beginPath(); ctx.ellipse(REST.x, REST.y+BALL_R*0.9, BALL_R*0.9, BALL_R*0.4, 0,0,2*Math.PI); ctx.fill();
+      drawBallScreen(REST.x, REST.y, BALL_R);
+      sub.textContent = pressing
+        ? 'Swipe up toward the target and release to throw.'
+        : 'Press on the ball, then swipe upward to throw.';
     } else if(phase==='fly'){
       const p=Math.min((now-flyStart)/T.FLIGHT_MS,1);
       const travel=1-Math.pow(1-p,1.7);
@@ -491,10 +480,10 @@ function runThrow(ctx, opts){
     ctx.strokeStyle='#8e1b18'; ctx.lineWidth=2; ctx.stroke();
   }
 
-  // ---- flick -> (power, aim) ------------------------------------------------
-  // power: release SPEED mapped from [FLICK_MIN..FLICK_MAX] px/ms onto [0..1].
-  // aim:   horizontal share of the (upward) flick direction. Straight up => 0;
-  //        up-right => +; up-left => -. Scaled so a ~45 deg flick ~ full AIM_MAX.
+  // ---- swipe -> (power, aim) ------------------------------------------------
+  // power: PEAK swipe speed mapped from [FLICK_MIN..FLICK_MAX] px/ms onto [0..1].
+  // aim:   horizontal share of the swipe DIRECTION (anchor->release). Straight up
+  //        => 0; up-right => +; up-left => -. ~45 deg swipe => full AIM_MAX.
   function flickToControl(vel){
     const speedPow=(vel.speed - T.FLICK_MIN_SPEED)/(T.FLICK_MAX_SPEED - T.FLICK_MIN_SPEED);
     const power=Math.max(0, Math.min(1, speedPow));
@@ -506,56 +495,51 @@ function runThrow(ctx, opts){
     aim=Math.max(-T.AIM_MAX, Math.min(T.AIM_MAX, aim));
     return {power, aim};
   }
-  // is this flick a valid throw? must be broadly UPWARD and not trivially small.
-  function validFlick(vel){
-    if(vel.speed < T.FLICK_MIN_SPEED*0.6) return false;          // basically no motion
-    const inv=vel.speed>0 ? 1/vel.speed : 0;
-    const upFrac=-vel.vy*inv;               // 1 = straight up, 0 = sideways, <0 = down
+  // is this swipe a valid throw? must be broadly UPWARD and not trivially small.
+  function validFlick(g){
+    if(g.travel < T.FLICK_MIN_TRAVEL_PX) return false;           // static click / micro-move
+    if(g.speed < T.FLICK_MIN_SPEED*0.6) return false;            // too slow to be a throw
+    const inv=g.speed>0 ? 1/g.speed : 0;
+    const upFrac=-g.vy*inv;                 // 1 = straight up, 0 = sideways, <0 = down
     if(upFrac < T.UP_DOT_MIN) return false;                      // not upward enough
-    // require a minimum travel over the sample window so a static click is ignored
-    const newest=samples[samples.length-1], old=samples[0];
-    const travel=Math.hypot(newest.x-old.x, newest.y-old.y);
-    return travel >= T.FLICK_MIN_TRAVEL_PX;
+    return true;
   }
 
   function pushSample(x,y){
     const now=performance.now();
     samples.push({t:now, x, y});
-    // keep a little more than the sample window so releaseVelocity has room
+    // bound the buffer; the whole swipe stays well within this window
     const cutoff=now - (T.FLICK_SAMPLE_MS+120);
     while(samples.length>2 && samples[0].t<cutoff) samples.shift();
-    ballScreen={x,y};
   }
 
   function startPress(px,py){
     if(phase!=='aiming') return;
-    // begin if the press lands near the resting ball
+    // begin if the press lands on/near the (fixed) resting ball. Generous radius:
+    // the ball never moves, so the player just needs to grab it, then swipe.
     const d=Math.hypot(px-REST.x, py-REST.y);
-    if(d>90) return;
+    if(d>BALL_R*3.5) return;
     pressing=true; samples=[]; pushSample(px,py);
   }
   function movePress(px,py){ if(!pressing) return; pushSample(px,py); }
   function endPress(px,py){
     if(!pressing) return; pressing=false;
     if(px!=null) pushSample(px,py);
-    const vel=releaseVelocity();
-    if(!validFlick(vel)){                    // ignore weak/downward flicks; let them retry
-      ballScreen=null; samples=[];
-      sub.textContent='Flick a bit harder and upward — press the ball and flick to throw.';
+    const vel=gestureRead();
+    if(!validFlick(vel)){                    // ignore weak/downward swipes; let them retry
+      samples=[];
+      sub.textContent='Swipe a bit faster and upward — press the ball and swipe to throw.';
       return;
     }
     const c=flickToControl(vel);
     resultAim=c.aim; resultPower=c.power;
     const out=opts.getOutcome(resultAim, resultPower);  // {scored, visual}
     scoredLanding=out.scored; visualLanding=out.visual;
-    // the ball leaves from wherever the finger released it
-    releaseScreen={ x:ballScreen?ballScreen.x:REST.x, y:ballScreen?ballScreen.y:REST.y };
-    // Start the flight curve at the ball's ACTUAL lateral release position (invert
-    // project()'s lateral term at the thrower depth) so the launch blend never has
-    // to yank the ball sideways — same fix as the slingshot builds.
-    const _relScale = VIEW.camK/(THROWER_D+VIEW.camK);
-    const _relWorldX = (releaseScreen.x - FIELD.w/2)/(VIEW.lateralScale*_relScale);
-    flightStart={ x:_relWorldX, d:THROWER_D };
+    // The ball stays fixed at REST, so it always LAUNCHES from REST — aim/power
+    // come from the swipe vector, not from where the cursor ended up. flightStart
+    // is therefore dead-center (world-x 0), matching the ball's on-screen position.
+    releaseScreen={ x:REST.x, y:REST.y };
+    flightStart={ x:0, d:THROWER_D };
     if(opts.voidMode){
       // PRACTICE = identical to an unmanipulated (U) throw: real skill decides the
       // landing. Use the UNCLAMPED ground position so a hard sideways throw flies
