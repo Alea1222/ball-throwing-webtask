@@ -361,7 +361,7 @@ function runThrow(ctx, opts){
   let scoredLanding=null, visualLanding=null, resultAim=0, resultPower=0;
   // trajectory (computed once at release, so flight is a single smooth curve)
   let flightStart=null, landPoint=null, finalPoint=null, apexH=0, finalWorld=null;
-  let releaseScreen=null, lastCat=null;   // ball screen pos at release; last fork pos
+  let releaseScreen=null, lastCat=null, dragOrigin=null;   // ball screen pos at release; last fork pos; drag origin
   const anchor=project(0,THROWER_D);              // ball rest position (screen px)
 
   function baseSway(now){ return Math.sin(((now-t0)%T.SWAY_MS)/T.SWAY_MS*2*Math.PI); }
@@ -374,30 +374,45 @@ function runThrow(ctx, opts){
     return {dx:dragDX*s, dy:dragDY*s, len:T.MAX_PULL_PX};
   }
 
-  // Draw the catapult: a Y-shaped frame that rocks with the sway. Returns the
-  // fork position (where the band is anchored) in screen px.
+  // Draw the slingshot FRAME (fixed part): a handle rising from the ground that
+  // splits into two prongs forming a V opening toward the field. The whole frame
+  // rocks with the sway. Returns the two prong TIPS (where the bands anchor) and
+  // the rest position of the pouch (between the prongs).
   function drawCatapult(ctx, swayShift){
-    const cxp=anchor.sx, groundY=anchor.sy+22;
-    const tilt=swayShift*T.SWAY_VISUAL;        // frame rocks hard with sway (radians)
-    const forkH=54, halfW=17;
-    // pivot at ground, fork rotates about it
-    const fx = cxp + Math.sin(tilt)*forkH;     // fork center x
-    const fy = groundY - Math.cos(tilt)*forkH; // fork center y
-    // post
-    ctx.strokeStyle='#4a3115'; ctx.lineWidth=9; ctx.lineCap='round';
-    ctx.beginPath(); ctx.moveTo(cxp, groundY); ctx.lineTo(fx, fy); ctx.stroke();
-    // two prongs of the Y
-    const px=Math.cos(tilt)*halfW, py=Math.sin(tilt)*halfW;
-    const prongLen=26;
-    const lpx=fx-px - Math.sin(tilt)*prongLen, lpy=fy-py - Math.cos(tilt)*prongLen;
-    const rpx=fx+px - Math.sin(tilt)*prongLen, rpy=fy+py - Math.cos(tilt)*prongLen;
-    ctx.strokeStyle='#5a3a1a'; ctx.lineWidth=7;
-    ctx.beginPath(); ctx.moveTo(fx-px,fy-py); ctx.lineTo(lpx,lpy);
-    ctx.moveTo(fx+px,fy+py); ctx.lineTo(rpx,rpy); ctx.stroke();
+    const cxp=anchor.sx, groundY=anchor.sy+24;
+    const tilt=swayShift*T.SWAY_VISUAL;        // frame rocks with sway (radians)
+    const handleH=40;                          // handle from ground to the split
+    // split point (where the Y forks)
+    const sxp = cxp + Math.sin(tilt)*handleH;
+    const syp = groundY - Math.cos(tilt)*handleH;
+    // handle
+    ctx.strokeStyle='#4a3115'; ctx.lineWidth=11; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(cxp, groundY); ctx.lineTo(sxp, syp); ctx.stroke();
+    // two prongs forming a V (open toward the field/top). Each prong goes up-and-out.
+    const prongLen=40, spread=0.5;             // spread = half-angle of the V (radians)
+    const laTip={ x: sxp + Math.sin(tilt-spread)*prongLen, y: syp - Math.cos(tilt-spread)*prongLen };
+    const raTip={ x: sxp + Math.sin(tilt+spread)*prongLen, y: syp - Math.cos(tilt+spread)*prongLen };
+    ctx.strokeStyle='#5a3a1a'; ctx.lineWidth=9; ctx.lineCap='round';
+    ctx.beginPath();
+    ctx.moveTo(sxp,syp); ctx.lineTo(laTip.x,laTip.y);
+    ctx.moveTo(sxp,syp); ctx.lineTo(raTip.x,raTip.y); ctx.stroke();
+    // prong tips (little caps)
+    ctx.fillStyle='#5a3a1a';
+    ctx.beginPath(); ctx.arc(laTip.x,laTip.y,5,0,2*Math.PI); ctx.fill();
+    ctx.beginPath(); ctx.arc(raTip.x,raTip.y,5,0,2*Math.PI); ctx.fill();
     // base feet
     ctx.strokeStyle='#3a2a1a'; ctx.lineWidth=6;
     ctx.beginPath(); ctx.moveTo(cxp-16,groundY+6); ctx.lineTo(cxp+16,groundY+6); ctx.stroke();
-    return {forkL:{x:lpx,y:lpy}, forkR:{x:rpx,y:rpy}, cx:fx, cy:fy};
+    // pouch rest position: midpoint between the prong tips (ball sits here at rest)
+    const pouchRest={ x:(laTip.x+raTip.x)/2, y:(laTip.y+raTip.y)/2 };
+    return { forkL:laTip, forkR:raTip, cx:pouchRest.x, cy:pouchRest.y, split:{x:sxp,y:syp} };
+  }
+
+  // Draw the pouch cradling the ball at screen position (bx,by), with the ball
+  // radius r. The pouch is a small curved cradle under/around the ball.
+  function drawPouch(ctx, bx, by, r){
+    ctx.strokeStyle='#6b4a26'; ctx.lineWidth=3; ctx.lineCap='round';
+    ctx.beginPath(); ctx.arc(bx, by, r+2, 0.15*Math.PI, 0.85*Math.PI, false); ctx.stroke();
   }
 
   function loop(now){
@@ -411,19 +426,27 @@ function runThrow(ctx, opts){
       if(dragging){
         const pull=clampedPull();
         const bx=cat.cx+pull.dx, by=Math.min(cat.cy+pull.dy, FIELD.h-24);
-        // elastic bands from each prong to the ball
-        ctx.strokeStyle='#7a4a1e'; ctx.lineWidth=4; ctx.lineCap='round';
+        // elastic bands from each prong tip to the pouch — they visibly stretch
+        // taut as you pull the pouch back. Width thins slightly as they stretch.
+        const stretch=Math.min(pull.len/T.MAX_PULL_PX,1);
+        ctx.strokeStyle='#8a5a2c'; ctx.lineWidth=Math.max(2.5, 5-stretch*2); ctx.lineCap='round';
         ctx.beginPath();
-        ctx.moveTo(cat.forkL.x,cat.forkL.y); ctx.lineTo(bx,by);
-        ctx.moveTo(cat.forkR.x,cat.forkR.y); ctx.lineTo(bx,by); ctx.stroke();
-        // the ball in the sling (with a little shading)
+        ctx.moveTo(cat.forkL.x,cat.forkL.y); ctx.lineTo(bx-6,by);
+        ctx.moveTo(cat.forkR.x,cat.forkR.y); ctx.lineTo(bx+6,by); ctx.stroke();
+        // pouch cradling the ball, then the ball on top
+        drawPouch(ctx, bx, by, 15);
         const grd=ctx.createRadialGradient(bx-4,by-4,2,bx,by,15);
         grd.addColorStop(0,'#ff5b52'); grd.addColorStop(1,'#c21f1a');
         ctx.beginPath(); ctx.arc(bx,by,15,0,2*Math.PI); ctx.fillStyle=grd; ctx.fill();
         ctx.strokeStyle='#8e1b18'; ctx.lineWidth=2; ctx.stroke();
         sub.textContent='Drag back to aim and power up — release to launch.';
       } else {
-        // ball resting in the fork
+        // ball resting in the pouch between the prongs, bands slack
+        ctx.strokeStyle='#8a5a2c'; ctx.lineWidth=5; ctx.lineCap='round';
+        ctx.beginPath();
+        ctx.moveTo(cat.forkL.x,cat.forkL.y); ctx.lineTo(cat.cx-6,cat.cy);
+        ctx.moveTo(cat.forkR.x,cat.forkR.y); ctx.lineTo(cat.cx+6,cat.cy); ctx.stroke();
+        drawPouch(ctx, cat.cx, cat.cy, 15);
         drawBallScreen(cat.cx, cat.cy, 15);
         sub.textContent='Press on the ball and drag back to launch.';
       }
@@ -512,12 +535,16 @@ function runThrow(ctx, opts){
 
   function startDrag(px,py){
     if(phase!=='aiming') return;
-    // only start if the press is reasonably near the resting ball
-    const d=Math.sqrt((px-anchor.sx)**2+(py-anchor.sy)**2);
-    if(d>90) return;
-    dragging=true; dragDX=px-anchor.sx; dragDY=py-anchor.sy;
+    // start if the press is near the resting ball (which sits in the pouch, up in
+    // the prongs) — use the last drawn pouch position, fall back to anchor.
+    const rest = lastCat ? {x:lastCat.cx, y:lastCat.cy} : {x:anchor.sx, y:anchor.sy};
+    const d=Math.sqrt((px-rest.x)**2+(py-rest.y)**2);
+    if(d>110) return;
+    dragOrigin={x:rest.x, y:rest.y};        // fixed origin for this drag (no sway jitter)
+    dragging=true; dragDX=px-dragOrigin.x; dragDY=py-dragOrigin.y;
   }
-  function moveDrag(px,py){ if(!dragging) return; dragDX=px-anchor.sx; dragDY=py-anchor.sy;
+  function moveDrag(px,py){ if(!dragging||!dragOrigin) return;
+    dragDX=px-dragOrigin.x; dragDY=py-dragOrigin.y;
     // only allow pulling BACK (downward on screen) and sideways; ignore forward push
     if(dragDY<0) dragDY=0; }
   function endDrag(){
