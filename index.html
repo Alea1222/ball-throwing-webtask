@@ -361,6 +361,7 @@ function runThrow(ctx, opts){
   let scoredLanding=null, visualLanding=null, resultAim=0, resultPower=0;
   // trajectory (computed once at release, so flight is a single smooth curve)
   let flightStart=null, landPoint=null, finalPoint=null, apexH=0, finalWorld=null;
+  let releaseScreen=null, lastCat=null;   // ball screen pos at release; last fork pos
   const anchor=project(0,THROWER_D);              // ball rest position (screen px)
 
   function baseSway(now){ return Math.sin(((now-t0)%T.SWAY_MS)/T.SWAY_MS*2*Math.PI); }
@@ -406,6 +407,7 @@ function runThrow(ctx, opts){
 
     if(phase==='aiming'){
       const cat=drawCatapult(ctx, swayNow);
+      lastCat=cat;
       if(dragging){
         const pull=clampedPull();
         const bx=cat.cx+pull.dx, by=Math.min(cat.cy+pull.dy, FIELD.h-24);
@@ -433,13 +435,19 @@ function runThrow(ctx, opts){
       const cx=flightStart.x+(landPoint.x-flightStart.x)*travel;
       const cd=flightStart.d+(landPoint.d-flightStart.d)*travel;
       const airH=apexH*(4*p*(1-p));
-      // fade the ball out near the end in void mode so it "disappears"
-      if(opts.voidMode){
-        ctx.globalAlpha = p<0.7?1:Math.max(0,1-(p-0.7)/0.3);
-        drawBall3D(ctx, cx, cd, airH); ctx.globalAlpha=1;
-      } else {
-        drawBall3D(ctx, cx, cd, airH);
+      // projected screen position on the trajectory
+      const pr=project(cx,cd);
+      const r=Math.max(4,26*pr.scale);
+      let sx=pr.sx, sy=pr.sy - r*0.4 - airH*pr.scale*140;
+      // blend from the actual release (sling) screen point onto the trajectory over
+      // the first part of flight, so launch is continuous (no teleport to the fork).
+      if(releaseScreen && p<0.18){
+        const b=p/0.18;                 // 0..1
+        sx = releaseScreen.x + (sx-releaseScreen.x)*b;
+        sy = releaseScreen.y + (sy-releaseScreen.y)*b;
       }
+      const alpha = (opts.voidMode && p>0.7) ? Math.max(0,1-(p-0.7)/0.3) : 1;
+      drawBallAtScreen(sx, sy, r, alpha);
       if(p>=1){
         if(opts.voidMode){ phase='done'; cleanup();
           opts.onDone({landing:scoredLanding, dist:euclideanFromCenter(scoredLanding),
@@ -463,6 +471,20 @@ function runThrow(ctx, opts){
         return; }
     }
     raf=requestAnimationFrame(loop);
+  }
+
+  // draw the ball at an explicit screen position (used during flight, with the
+  // launch blend) — same look as drawBall3D but without re-projecting.
+  function drawBallAtScreen(sx, sy, r, alpha){
+    ctx.globalAlpha = alpha==null?1:alpha;
+    // shadow roughly under it
+    ctx.fillStyle='rgba(0,0,0,0.22)';
+    ctx.beginPath(); ctx.ellipse(sx, sy+r*0.9, r*0.9, r*0.4, 0,0,2*Math.PI); ctx.fill();
+    ctx.beginPath(); ctx.arc(sx, sy, r, 0,2*Math.PI); ctx.fillStyle='#e12d28'; ctx.fill();
+    ctx.strokeStyle='#8e1b18'; ctx.lineWidth=2; ctx.stroke();
+    ctx.strokeStyle='rgba(255,255,255,0.5)'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.ellipse(sx, sy, r*0.55, r, 0,0,2*Math.PI); ctx.stroke();
+    ctx.globalAlpha=1;
   }
 
   // simple flat screen-space ball (used at rest / in the sling)
@@ -504,6 +526,11 @@ function runThrow(ctx, opts){
     resultAim=currentAim(); resultPower=currentPower();
     const out=opts.getOutcome(resultAim, resultPower);  // {scored, visual}
     scoredLanding=out.scored; visualLanding=out.visual;
+    // capture the ball's ACTUAL screen position in the sling at release, so the
+    // flight starts exactly there (no teleport/jump to the fork center).
+    const cat=lastCat || {cx:anchor.sx, cy:anchor.sy};
+    const pull=clampedPull();
+    releaseScreen={ x:cat.cx+pull.dx, y:Math.min(cat.cy+pull.dy, FIELD.h-24) };
     // Compute the WHOLE trajectory now, once, so the flight is one smooth curve
     // (no mid-flight correction/jump). Fly from the fork to the landing, then roll.
     flightStart={ x:0, d:THROWER_D };
