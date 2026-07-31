@@ -46,7 +46,7 @@
   .bt-status{font-size:15px;color:#12240f;min-height:22px;font-weight:600;}
   .bt-sub{font-size:13px;color:#4a5a46;min-height:18px;}
   canvas.bt-field{border-radius:10px;box-shadow:0 6px 30px rgba(0,0,0,.35);background:#000;touch-action:none;max-width:100%;height:auto;}
-  .bt-panel{background:#f2f4f0;color:#12240f;border-radius:12px;padding:26px 30px;}
+  .bt-panel{background:transparent;color:#12240f;border-radius:0;padding:26px 30px;}
   textarea{font-family:inherit;}
 </style>
 </head>
@@ -110,7 +110,7 @@ function euclideanFromCenter(p){return Math.sqrt(p.x*p.x+p.y*p.y);}
    OSF at the end. Set DATAPIPE_ID to your DataPipe experiment ID to enable both
    balanced assignment and server upload. */
 const BT_CONFIG = {
-  practiceThrows: 5,
+  practiceThrows: 1,
   TESTING: false,                // false = pilot (no picker/replay). true = testing picker.
   DATAPIPE_ID: "l4vuPmnrCh5F",   // DataPipe experiment ID (OSF project j8fxt)
   NUM_CONDITIONS: 3
@@ -128,7 +128,7 @@ const STRUCTURES = { improvement:"FFFSSSS", stochastic:"SSFFSFS", unmanipulated:
 
 
 /* -------------------------------------------------------------------------
-   SLINGSHOT / CATAPULT THROW (Angry Birds style) — same across ALL conditions:
+   SLINGSHOT / CATAPULT THROW  — same across ALL conditions:
      • DRAG the ball back from the catapult (mouse/touch). The drag vector sets
        BOTH power and aim: pull length -> power (bigger arc, further), pull
        side-to-side -> aim (left/right). Release to launch; the ball flies a big
@@ -758,6 +758,33 @@ function initSession(condition, blind){
 
 function panel(html){ return `<div class="bt-panel bt-instructions">${html}</div>`; }
 
+/* Read-gate: disable an instruction page's Continue button(s) for READ_GATE_MS so
+   participants can't skip past without reading. Shows a live countdown on the
+   button, then restores the real label and re-enables. Returned object is spread
+   into a jsPsychHtmlButtonResponse trial (adds on_load; leaves everything else). */
+const READ_GATE_MS = 5000;
+function readGate(){
+  return {
+    on_load: function(){
+      const btns = Array.from(document.querySelectorAll('.jspsych-btn'));
+      if(!btns.length) return;
+      const labels = btns.map(b=>b.innerHTML);
+      const started = Date.now();
+      btns.forEach(b=>{ b.disabled = true; b.style.opacity = 0.5; b.style.cursor = 'not-allowed'; });
+      const tick = ()=>{
+        const remain = Math.ceil((READ_GATE_MS - (Date.now()-started))/1000);
+        if(remain > 0){
+          btns.forEach((b,i)=>{ b.innerHTML = `${labels[i]} (${remain})`; });
+          setTimeout(tick, 250);
+        } else {
+          btns.forEach((b,i)=>{ b.disabled=false; b.style.opacity=''; b.style.cursor=''; b.innerHTML=labels[i]; });
+        }
+      };
+      tick();
+    }
+  };
+}
+
 // Testing-only condition picker. Random secretly selects one and does not reveal
 // it; the true condition is still logged in the data (on each throw via SESSION).
 const conditionPicker={type:jsPsychHtmlButtonResponse,
@@ -780,8 +807,8 @@ const conditionPicker={type:jsPsychHtmlButtonResponse,
 const intro={type:jsPsychHtmlButtonResponse,stimulus:panel(`<h2>Ball Throwing Task</h2>
   <p>You'll throw a ball toward a target on the ground. Your goal is to land it
   <b>as close to the center of the target as possible</b>.</p>
-  <p>First, <b>${BT_CONFIG.practiceThrows} practice throws</b> to learn the controls. Then the task begins.</p>`),
-  choices:['Begin practice']};
+  <p>First, <b>${BT_CONFIG.practiceThrows} practice ${BT_CONFIG.practiceThrows===1?'throw':'throws'}</b> to learn the controls. Then the task begins.</p>`),
+  choices:['Begin practice'], ...readGate()};
 
 const mechExplain={type:jsPsychHtmlButtonResponse,stimulus:panel(
   `<h2>How to throw</h2>
@@ -792,7 +819,7 @@ const mechExplain={type:jsPsychHtmlButtonResponse,stimulus:panel(
    fall short. <b>Which way you pull</b> sets your aim left or right.</p>
    <p>Like a real throw, it won't be perfectly precise every time — give it a few
    tries to get a feel for it.</p>`),
-  choices:['Got it']};
+  choices:['Got it'], ...readGate()};
 
 function makeThrowTrial({isPractice, label}){
   return {
@@ -902,9 +929,29 @@ const relativeSkill={type:jsPsychHtmlButtonResponse,
 
 const magnitude={ timeline:[{type:jsPsychHtmlButtonResponse,
   stimulus:panel(`<p>On a scale from <b>1</b> to <b>10</b> (1 = minimal change,
-  10 = substantial change), how much better/worse did you get?</p>`),
-  choices:Array.from({length:10},(_,i)=>String(i+1)), data:{measure:'relative_skill_magnitude'},
-  on_finish:(d)=>{ d.magnitude=d.response+1; }}],
+  10 = substantial change), how much better/worse did you get?</p>
+  <div style="max-width:460px;margin:22px auto 4px;">
+    <input type="range" id="bt-mag" min="1" max="10" step="1" value="5"
+           style="width:100%;height:28px;cursor:pointer;">
+    <div style="display:flex;justify-content:space-between;font-size:12px;color:#4a5a46;margin-top:2px;">
+      <span>1 — minimal</span><span>10 — substantial</span></div>
+    <div style="text-align:center;margin-top:12px;font-size:20px;font-weight:700;color:#12240f;">
+      Your rating: <span id="bt-mag-val">—</span></div>
+  </div>`),
+  choices:['Continue'], data:{measure:'relative_skill_magnitude'},
+  on_load:function(){
+    const slider=document.getElementById('bt-mag');
+    const out=document.getElementById('bt-mag-val');
+    const btn=document.querySelector('.jspsych-btn');
+    // require an explicit interaction before Continue works, so there is no
+    // silent default rating. Slider is integer-only (step=1).
+    window.__mag=null;
+    if(btn){ btn.disabled=true; btn.style.opacity=0.5; btn.style.cursor='not-allowed'; }
+    const commit=()=>{ window.__mag=parseInt(slider.value,10); out.textContent=window.__mag;
+      if(btn){ btn.disabled=false; btn.style.opacity=''; btn.style.cursor=''; } };
+    if(slider){ slider.addEventListener('input', commit); slider.addEventListener('change', commit); }
+  },
+  on_finish:(d)=>{ d.magnitude = (window.__mag!=null?window.__mag:null); }}],
   conditional_function:()=>{ const l=jsPsych.data.get().filter({measure:'relative_skill_direction'}).last(1).values()[0];
     return l && (l.relative_skill==='better'||l.relative_skill==='worse'); }};
 
@@ -942,7 +989,7 @@ const debrief={type:jsPsychHtmlButtonResponse,stimulus:panel(`<h2>Thank you</h2>
   <p>That's the end of the task. During the throws, the landing outcomes were
   <b>predetermined</b>. We withhold this during the task to study how such
   manipulations affect judgments of one's own ability.</p>`),
-  choices:['Continue']};
+  choices:['Continue'], ...readGate()};
 
 // End screen: Play again (restart) or Show data (on-screen table). TESTING only;
 // real runs just end. Kept as a looping node so "Play again" restarts cleanly.
@@ -977,7 +1024,7 @@ function buildRun(){
   for(let i=0;i<BT_CONFIG.practiceThrows;i++) tl.push(makeThrowTrial({isPractice:true}));
   tl.push({type:jsPsychHtmlButtonResponse,stimulus:panel(`<h2>Now the task begins</h2>
     <p>Throw the ball as close to the <b>center</b> of the target as you can.</p>`),
-    choices:['Start']});
+    choices:['Start'], ...readGate()});
   for(let i=0;i<NUM_THROWS;i++) tl.push(makeThrowTrial({isPractice:false}));
   tl.push(relativeSkill, magnitude, hints, manipCheck, manipWhat, debrief);
   if(!BT_CONFIG.TESTING && BT_CONFIG.DATAPIPE_ID){ tl.push(makeSaveTrial()); }
