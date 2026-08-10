@@ -128,7 +128,7 @@ const STRUCTURES = { improvement:"FFFSSSS", stochastic:"SSFFSFS", unmanipulated:
 
 
 /* -------------------------------------------------------------------------
-   SLINGSHOT / CATAPULT THROW  — same across ALL conditions:
+   SLINGSHOT / CATAPULT THROW (Angry Birds style) — same across ALL conditions:
      • DRAG the ball back from the catapult (mouse/touch). The drag vector sets
        BOTH power and aim: pull length -> power (bigger arc, further), pull
        side-to-side -> aim (left/right). Release to launch; the ball flies a big
@@ -362,13 +362,19 @@ function runThrow(ctx, opts){
   let raf=null, phase='ready', t0=0, flyStart=0, rollStart=0;
   let dragging=false, dragDX=0, dragDY=0;         // drag delta from anchor (px)
   let swayNow=0;
+  // The catapult holds perfectly still until the participant starts pulling the
+  // ball back; wobble begins at that moment. swayStart is stamped in startDrag.
+  let swayStart=null;
   let scoredLanding=null, visualLanding=null, resultAim=0, resultPower=0;
   // trajectory (computed once at release, so flight is a single smooth curve)
   let flightStart=null, landPoint=null, finalPoint=null, apexH=0, finalWorld=null;
   let releaseScreen=null, lastCat=null, dragOrigin=null;   // ball screen pos at release; last fork pos; drag origin
   const anchor=project(0,THROWER_D);              // ball rest position (screen px)
 
-  function baseSway(now){ return Math.sin(((now-t0)%T.SWAY_MS)/T.SWAY_MS*2*Math.PI); }
+  function baseSway(now){
+    if(swayStart===null) return 0;                 // still until the pull begins
+    return Math.sin(((now-swayStart)%T.SWAY_MS)/T.SWAY_MS*2*Math.PI);
+  }
 
   // clamped pull vector (never exceeds MAX_PULL_PX), so the ball never leaves the frame
   function clampedPull(){
@@ -386,8 +392,10 @@ function runThrow(ctx, opts){
     const cxp=anchor.sx, groundY=anchor.sy+24;
     const handleTilt=swayShift*T.SWAY_VISUAL;  // BOTTOM: handle rocks (drives aim too)
     // TOP: prongs flex at the joint on their OWN oscillator (different period/phase),
-    // so the top and bottom lean independently — a floppy, whipping wobble.
-    const prongPhase=Math.sin((performance.now()%T.PRONG_MS)/T.PRONG_MS*2*Math.PI);
+    // so the top and bottom lean independently — a floppy, whipping wobble. Held
+    // still until the participant starts pulling back (swayStart set in startDrag).
+    const prongPhase = swayStart===null ? 0
+      : Math.sin(((performance.now()-swayStart)%T.PRONG_MS)/T.PRONG_MS*2*Math.PI);
     const prongTilt=handleTilt + prongPhase*T.PRONG_VISUAL;  // relative to the handle
     const handleH=40;                          // handle from ground to the split
     // split/joint point (end of the handle) — governed by the handle tilt
@@ -553,6 +561,7 @@ function runThrow(ctx, opts){
     if(d>110) return;
     dragOrigin={x:rest.x, y:rest.y};        // fixed origin for this drag (no sway jitter)
     dragging=true; dragDX=px-dragOrigin.x; dragDY=py-dragOrigin.y;
+    if(swayStart===null) swayStart=performance.now();   // begin wobble on first pull
   }
   function moveDrag(px,py){ if(!dragging||!dragOrigin) return;
     dragDX=px-dragOrigin.x; dragDY=py-dragOrigin.y;
