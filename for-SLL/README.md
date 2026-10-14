@@ -77,6 +77,62 @@ parameters and the ring's position at rest are logged
 (`ring_mode`, `ring_period_ms`, `ring_amplitude`, `ring_base_d`, `ring_rest_x`,
 `ring_rest_d`).
 
+**The ring stops at release.** `RING.frozenAt` is stamped the instant the pouch
+is let go, and the ring holds that position for the rest of the trial. So the
+ring sweeps while the participant aims — roughly 2 world units per half-second at
+the default period, which is where the added difficulty and the release-timing
+demand live — and the ball then flies an ordinary arc to a *stationary* target.
+
+This matters for more than tidiness. While the ring kept travelling through the
+flight, the coercion had to bend the ball toward wherever the ring ended up, and
+a ball that visibly curves is exactly what makes a participant suspect
+manipulation — which the manipulation-check item then picks up. Freezing at
+release removes the curve entirely: nothing has to be led, and no prediction of
+the ring's future position is needed.
+
+The ring's position for each throw is logged as `ring_fixed_x` / `ring_fixed_d`.
+**Analysis needs these** — a landing is an offset from that point, not from
+`(0, RING_D)`.
+
+### The coerced distances are identical to the static version
+
+This is the comparability requirement, and it is enforced rather than assumed.
+The engine hands out an *offset* from the ring centre, and the offset's length is
+the experimental quantity — 1.05 / 0.75 / 0.45 / 0.15 for the four successes,
+4.0 / 3.5 / 3.0 for the failures. A participant's distance from the centre of the
+target is therefore the same here as in `two-prong`, even though that centre is
+somewhere different on every trial.
+
+The thing that can break it is `landingToGroundAt()`'s field clamp: if the ring
+sits near a wall and the target is offset further that way, `ring.x + offset.x`
+leaves the drawable area and gets truncated, silently *shortening* the distance.
+Measured before the guard existed: a 4.0 failure thrown to the same side as a
+ring at x = ±3.2 came to rest **3.5** from centre — a 12.5% error on the largest
+failure, and biased in one direction (always shorter, never longer).
+
+So the ring's travel is bounded so that a target at the largest offset the engine
+can request always fits:
+
+```
+MAX_TARGET_OFFSET = 4.0                     derived from the engine constants
+MAX_RING_X        = 6.7 − 4.0 = 2.7         amplitude capped to this
+RING.baseD        kept within a matching depth band
+```
+
+`AMPLITUDE` is therefore capped at 2.7, not clamped per-frame — clamping the
+position would make the ring stall at the ends of its sweep. If a configured
+amplitude exceeds the cap the console says so at load; both the configured and
+effective values are logged (`ring_amplitude`, `ring_amplitude_effective`).
+
+Verified over 58,752 ring positions (full cycle × whole depth range × every
+coerced offset × 24 angles per success) in both modes: **zero** cases where the
+distance from the moving centre differs from the intended value. Also checked
+end to end through `runThrow` at the worst-case ring phase.
+
+Because `MAX_TARGET_OFFSET` is derived from `SUCCESS_TARGET_DISTS`,
+`FAILURE_ZONE_LEFT_X_RANGE` and `SHIFT_PER_FAILURE` rather than hard-coded,
+retuning the zones cannot silently reintroduce the problem.
+
 ## Analysis
 
 ```bash
@@ -95,11 +151,11 @@ build.
 
 ## Known issues / not yet decided
 
-- **Moving-target timing is uncalibrated.** At the placeholder `PERIOD_MS: 4200`
-  the ring travels more than half a cycle during the ~2.4 s a throw takes, so the
-  ball visibly curves to chase it. Either lengthen the period substantially or
-  freeze the ring at release — the second is cleaner but changes what the
-  manipulation is.
+- **Moving-target speed is uncalibrated.** `PERIOD_MS: 4200` and
+  `AMPLITUDE: 3.2` were never derived from anything. With the ring now frozen at
+  release they no longer distort the flight, but they do set how hard it is to
+  aim: at these values the ring crosses ~2 world units in half a second, which
+  may be too fast to aim at deliberately. Pilot it and tune.
 - **No recall phase in these versions.** If the recall phase is meant to ship to
   SLL too, it needs merging in deliberately — and in the moving variants it would
   have to be made ring-relative, since it currently scores clicks against a static

@@ -47,9 +47,10 @@
 
   VARIANT (2026-10-13): Moving-Circular. Forked from two-prong. The target ring MOVES:
   the ring travels around a circle on the ground plane. Everything in the coercion
-  engine is unchanged — what changes is that a coerced landing is now placed
-  relative to WHERE THE RING WILL BE when the ball comes to rest, not relative
-  to a fixed point at RING_D. See TARGET_MOTION / ringPosAt() below.
+  engine is unchanged — what changes is that a coerced landing is placed relative
+  to the RING'S OWN POSITION rather than a fixed point at RING_D. The ring sweeps
+  while the participant aims and STOPS AT RELEASE, so the ball always flies to a
+  stationary target. See TARGET_MOTION / ringPosAt() below.
 
   NOT FINALISED. TARGET_MOTION's period, amplitude and the random-distance
   range are placeholders — they were never derived from anything, and need
@@ -273,26 +274,74 @@ const TARGET_MOTION = {
   DEPTH_RANGE: [7.5, 11.0]
 };
 
+/* ---- KEEPING THE COERCED DISTANCES EXACT ----------------------------------
+   The engine hands out an OFFSET from the ring centre, and that offset's length
+   is the experimental quantity: 1.05/0.75/0.45/0.15 for the four successes,
+   4.0/3.5/3.0 for the failures. Those must be identical to the static-target
+   version, or the moving variants are not comparable with it.
+
+   The hazard is landingToGroundAt()'s field clamp. If the ring sits near a wall
+   and the target is offset further that way, ring.x + offset.x exceeds the
+   drawable area and gets truncated — silently SHORTENING the distance. Measured
+   before this guard: a 4.0 failure thrown to the same side as a ring at
+   x = ±3.2 came to rest 3.5 from centre, a 12.5% error on the largest failure.
+
+   So the ring's travel is bounded such that a target at the largest offset the
+   engine can request still fits in every direction. MAX_TARGET_OFFSET is derived
+   from the engine constants rather than hard-coded, so retuning the zones or the
+   shift cannot silently reintroduce the problem. */
+const MAX_TARGET_OFFSET = Math.max(
+  SUCCESS_TARGET_DISTS[0],
+  Math.abs((FAILURE_ZONE_LEFT_X_RANGE[0]+FAILURE_ZONE_LEFT_X_RANGE[1])/2 - SHIFT_PER_FAILURE)
+);
+const MAX_RING_X = (VIEW.worldHalfX - 0.3) - MAX_TARGET_OFFSET;
+const RING_D_MIN = (THROWER_D + 0.3) + MAX_TARGET_OFFSET;
+const RING_D_MAX = (VIEW.dFar - 1)   - MAX_TARGET_OFFSET;
+// Amplitude is capped rather than the ring position being clamped: clamping the
+// position would make the ring stall at the extremes of its sweep, which looks
+// broken. Capping the amplitude keeps the motion smooth.
+const RING_AMPLITUDE = Math.min(TARGET_MOTION.AMPLITUDE, MAX_RING_X);
+if(RING_AMPLITUDE < TARGET_MOTION.AMPLITUDE){
+  console.warn('[moving target] AMPLITUDE '+TARGET_MOTION.AMPLITUDE+' capped to '+
+    RING_AMPLITUDE.toFixed(2)+' so a '+MAX_TARGET_OFFSET+
+    '-unit coerced offset always fits inside the field. Raising it past this ' +
+    'would silently shorten the largest failure distance.');
+}
+
 /* Per-trial motion state. Re-rolled at the top of every throw trial so the ring
    does not start from the same place (and, with RANDOM_DISTANCE, the same
    depth) every time. */
-const RING = { t0:0, phase:0, baseD:RING_D };
+const RING = { t0:0, phase:0, baseD:RING_D, frozenAt:null, fixedPos:null };
 function resetRingForTrial(){
   RING.t0 = performance.now();
   RING.phase = Math.random()*2*Math.PI;
   RING.baseD = TARGET_MOTION.RANDOM_DISTANCE
     ? uniform(TARGET_MOTION.DEPTH_RANGE[0], TARGET_MOTION.DEPTH_RANGE[1])
     : RING_D;
+  // keep the whole sweep inside the band where a max-offset target still fits
+  RING.baseD = Math.max(RING_D_MIN + RING_AMPLITUDE,
+                Math.min(RING_D_MAX - RING_AMPLITUDE, RING.baseD));
+  RING.frozenAt = null;
+  RING.fixedPos = null;
 }
 
 /* Ring center at time t (ms, performance.now() clock), in ground coords. */
 function ringPosAt(t){
   const M = TARGET_MOTION;
+  // THE RING STOPS AT RELEASE. frozenAt is stamped the instant the pouch is let
+  // go; from then on the ring holds that position for the rest of the trial.
+  // So the ring sweeps while the participant aims — that is where the added
+  // difficulty and the release-timing demand live — and the ball then flies an
+  // ordinary arc to a STATIONARY target. Nothing has to be led, and the ball
+  // never curves to chase the ring, which is what made the manipulation
+  // conspicuous when the ring kept travelling through the flight.
+  if(RING.frozenAt != null && t > RING.frozenAt) t = RING.frozenAt;
   const ph = 2*Math.PI*((t - RING.t0)/M.PERIOD_MS) + RING.phase;
+  const A = RING_AMPLITUDE;        // bounded so coerced offsets never get clamped
   if(M.MODE === 'circular'){
-    return { x: M.AMPLITUDE*Math.cos(ph), d: RING.baseD + M.AMPLITUDE*Math.sin(ph) };
+    return { x: A*Math.cos(ph), d: RING.baseD + A*Math.sin(ph) };
   }
-  return { x: M.AMPLITUDE*Math.sin(ph), d: RING.baseD };
+  return { x: A*Math.sin(ph), d: RING.baseD };
 }
 
 /* Ring-relative version of landingToGround: an engine target {x,y} is an
@@ -805,15 +854,15 @@ function runThrow(ctx, opts){
       // the rest of the way. This is the web analogue of VR's
       // generate_landing_and_target_points() + guide_ball_to_target(): what the
       // participant sees is what gets logged.
-      // MOVING TARGET: the engine's target is an offset from the ring center,
-      // so it has to be resolved against where the ring WILL BE when the ball
-      // stops — not where it is now. rollMs is fixed first (from the nominal
-      // LANDING_OFFSET) so the rest time is knowable before the target is.
+      // MOVING TARGET: the ring stops HERE, at release. One static ring position
+      // then serves the whole flight, so the engine's offset resolves against it
+      // directly — no prediction, no leading, and the ball flies a normal arc.
+      RING.frozenAt=performance.now();
+      const ringFixed=ringPosAt(RING.frozenAt);
+      RING.fixedPos={ x:ringFixed.x, d:ringFixed.d };
       rollMs=Math.round(T.ROLL_MS*Math.max(0.6, Math.min(2.6, LANDING_OFFSET/T.ROLL_DIST)));
-      const tRest=performance.now()+T.FLIGHT_MS+rollMs;
-      const ringAtRest=ringPosAt(tRest);
       finalWorld={ x:visualLanding.x, y:visualLanding.y };
-      finalPoint=landingToGroundAt(finalWorld, ringAtRest);
+      finalPoint=landingToGroundAt(finalWorld, ringFixed);
       // back off along the line from the release point to the target
       const dx=finalPoint.x-flightStart.x, dd=finalPoint.d-flightStart.d;
       const len=Math.hypot(dx,dd)||1;
@@ -823,19 +872,21 @@ function runThrow(ctx, opts){
                   d:Math.max(THROWER_D+0.3, finalPoint.d-(dd/len)*off) };
       // report the first-touch point RING-RELATIVE, so the exported LANDING
       // POINT still means "offset from target center" as it does in VR.
-      landingReport={ x:landPoint.x-ringAtRest.x, y:landPoint.d-ringAtRest.d };
+      landingReport={ x:landPoint.x-ringFixed.x, y:landPoint.d-ringFixed.d };
       apexH=1.1 + resultPower*1.6;                       // arc height by power
     } else {
       // real (U) throw: lands where skill put it, then rolls a little further on.
-      // Their error is relative to the ring they were aiming at, so it is
-      // resolved against the ring's position at touchdown.
-      const ringAtLandU=ringPosAt(performance.now()+T.FLIGHT_MS);
-      landPoint=landingToGroundAt(visualLanding, ringAtLandU);
+      // Ring stops at release here too, so their error is measured against the
+      // same static ring they were aiming at when they let go.
+      RING.frozenAt=performance.now();
+      const ringFixedU=ringPosAt(RING.frozenAt);
+      RING.fixedPos={ x:ringFixedU.x, d:ringFixedU.d };
+      rollMs=T.ROLL_MS;
+      landPoint=landingToGroundAt(visualLanding, ringFixedU);
       apexH=1.1 + resultPower*1.6;                       // arc height by power
       // roll: continue forward (away from thrower) a bit, scaled by power
       finalWorld={ x:visualLanding.x, y:visualLanding.y + T.ROLL_DIST*(0.5+resultPower*0.7) };
-      finalPoint=landingToGroundAt(finalWorld, ringAtLandU);
-      rollMs=T.ROLL_MS;
+      finalPoint=landingToGroundAt(finalWorld, ringFixedU);
     }
 
     // GHOST (debug only): the trajectory this throw WOULD have taken with no
@@ -846,7 +897,9 @@ function runThrow(ctx, opts){
     // the coerced ball's stretched roll.
     ghostOn = !!(opts.showGhost && opts.rollToTarget && realLanding);
     if(ghostOn){
-      const ringAtGhost = ringPosAt(performance.now()+T.FLIGHT_MS);
+      // same reference ring as the live ball, so the two are comparable
+      const ringAtGhost = ringPosAt(RING.frozenAt != null
+        ? RING.frozenAt : performance.now()+T.FLIGHT_MS);
       ghostLand = landingToGroundAt(realLanding, ringAtGhost);
       ghostFinal = landingToGroundAt({ x:realLanding.x,
                                        y:realLanding.y + T.ROLL_DIST*(0.5+resultPower*0.7) },
@@ -1425,10 +1478,16 @@ function makeThrowTrial({isPractice, label}){
             ghost_shown: GHOST,
             // MOVING TARGET state for this trial
             ring_mode: TARGET_MOTION.MODE,
+            ring_freeze: 'release',   // ring halts when the pouch is released
+            // where the ring actually sat for this throw — the landing is an
+            // offset from THIS, not from (0, RING_D), so analysis needs it.
+            ring_fixed_x: RING.fixedPos? +RING.fixedPos.x.toFixed(3) : null,
+            ring_fixed_d: RING.fixedPos? +RING.fixedPos.d.toFixed(3) : null,
             ring_base_d: +RING.baseD.toFixed(3),
             ring_phase: +RING.phase.toFixed(3),
             ring_period_ms: TARGET_MOTION.PERIOD_MS,
-            ring_amplitude: TARGET_MOTION.AMPLITUDE,
+            ring_amplitude: TARGET_MOTION.AMPLITUDE,          // configured
+            ring_amplitude_effective: +RING_AMPLITUDE.toFixed(3), // after bounding
             aim:+res.aim.toFixed(3), power:+res.power.toFixed(3),
             hold_ms: res.holdMs,                          // time the ball was held/pulled before release
             zone_size:(!isPractice && type==='S')?SESSION.trialManager.getSuccessZoneSize():null,
